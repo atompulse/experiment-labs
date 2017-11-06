@@ -122,7 +122,7 @@ class PricePredictionEngine
                     $columnSamplesTransformed[$key] = $this->transformers[$column]['VALUES'][$value];
                 }
                 // determine feature/price correlation
-                $this->transformers[$column]['C'] = Correlation::pearson($columnSamplesTransformed, $dataset->getTargets()) . "\n";
+                $this->transformers[$column]['C'] = Correlation::pearson($columnSamplesTransformed, $dataset->getTargets());
             }
         }
 
