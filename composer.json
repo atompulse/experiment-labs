@@ -1,0 +1,23 @@
+{
+  "name": "atompulse/experiment-labs",
+  "description": "Experiments with PHP",
+  "type": "project",
+  "require": {
+    "php-ai/php-ml": "^0.4.1"
+  },
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "atompulse",
+      "email": "petru.cojocar@gmail.com"
+    }
+  ],
+  "autoload": {
+    "psr-4": {
+      "Atompulse\\Labs\\": "src/Atompulse/Labs/"
+    },
+    "exclude-from-classmap": [
+      "**/Tests/"
+    ]
+  }
+}
