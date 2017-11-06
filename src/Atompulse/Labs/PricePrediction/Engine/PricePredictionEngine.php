@@ -1,9 +1,10 @@
 <?php
+
 namespace Atompulse\Labs\PricePrediction\Engine;
 
 use Atompulse\Labs\PricePrediction\PriceDataset;
-use Phpml\Math\Statistic\Mean;
-use Phpml\Math\Statistic\StandardDeviation;
+use Phpml\SupportVectorMachine\Kernel;
+use Phpml\Math\Statistic\Correlation;
 use Phpml\Regression\SVR;
 
 /**
@@ -20,25 +21,16 @@ class PricePredictionEngine
     protected $transformers = null;
 
     /**
-     * @var array
-     */
-    protected $originalState = null;
-
-    /**
      * @var float
      */
-    protected $categoricalBoundary = 0.45; // feature values are categorical if they converge to 1
-    /**
-     * @var float|
-     */
-    protected $limitedVariableBoundary = 0.15; // feature values are continuous if they converge to 0
+    protected $categoricalBoundary = 0.1; // feature values are categorical if they converge to 1
 
     /**
      * @param array|null $transformers
      * @param float|null $categoricalBoundary
-     * @param float|null $limitedVariableBoundary
      */
-    public function __construct(array $transformers = null, float $categoricalBoundary = null, float $limitedVariableBoundary = null) {
+    public function __construct(array $transformers = null, float $categoricalBoundary = null)
+    {
         // initialize stored transformers
         if ($transformers) {
             $this->transformers = $transformers;
@@ -47,11 +39,19 @@ class PricePredictionEngine
         if ($categoricalBoundary) {
             $this->categoricalBoundary = $categoricalBoundary;
         }
-        if ($limitedVariableBoundary) {
-            $this->limitedVariableBoundary = $limitedVariableBoundary;
-        }
+
+        $kernel = Kernel::RBF;
+        $degree = 3;
+        $epsilon = 0.1;
+        // A large C gives you low bias and high variance. A small C gives you higher bias and lower variance.
+        $cost = 999999;
+        $gamma = null;
+        $coef0 = 0.0;
+        $tolerance = 0.001;
+        $cacheSize = 1000;
+        $shrinking = true;
         // initialize support vector regression
-        $this->regression = new SVR();
+        $this->regression = new SVR($kernel, $degree, $epsilon, $cost, $gamma, $coef0, $tolerance, $cacheSize, $shrinking);
     }
 
     /**
@@ -66,57 +66,63 @@ class PricePredictionEngine
 
         // analyze all values from all columns to figure out what type of data
         // we are dealing with so we can transform them to a more formal structure
-        // that we can feed into the SVR; otherwise our little SVR will do nothing.
+        // that we can feed into the SVR;
         // we want to know if features are categorical or variables;
-        // if they are variables we want know if this variance is continuous or
-        // if it is limited to a predetermined set.
         // we do this naively by analyzing the occurrences of values in columns and noticing
         // the patterns that occur
-        // we use a configurable categoricalBoundary and limitedVariableBoundary to be able to fine-tune
-        // this automated analysis
+        // we use a configurable categoricalBoundary to be able to fine-tune this automated analysis
 
         foreach ($columnarDataSamples as $column => $columnSamples) {
+            // handle empty values
+            foreach ($columnSamples as &$rawValue) {
+                if (empty($rawValue)) {
+                    $rawValue = 0;
+                }
+            }
+
             $pivot = array_count_values($columnSamples);
             $totalValues = count($columnSamples);
             $uniqueValues = count(array_keys($pivot));
-            $q = round($totalValues / ($uniqueValues * 100), 2); // ratio
+            $ratio = round($totalValues / ($uniqueValues * 100), 2); // ratio
             // check feature type
-            switch ($q) {
-                case $q > $this->categoricalBoundary :
+            switch ($ratio) {
+                case $ratio > $this->categoricalBoundary :
                     $this->transformers[$column] = [
                         'transformer' => 'Categorical',
-                        'input' => $q,
-                        'pivot' => $pivot
-                        ];
-                    break;
-                case $q <= $this->categoricalBoundary && $q > $this->limitedVariableBoundary :
-                    $this->transformers[$column] = [
-                        'transformer' => 'ShortVariable',
-                        'input' => $q,
-                        'pivot' => $pivot
-                        ];
+                        'ratio' => $ratio
+                    ];
                     break;
                 default:
                     $this->transformers[$column] = [
                         'transformer' => 'Continuous',
-                        'input' => $q,
-                        'pivot' => $pivot,
+                        'ratio' => $ratio
                     ];
                     break;
             }
 
             // check feature value type
             // check if all values are numeric in this column
-            if (ctype_digit(implode('', $columnSamples[0]))) {
+            if ($columnSamples == array_filter($columnSamples, 'is_numeric')) {
                 $this->transformers[$column]['TYPE'] = 'NUMERIC';
-                $this->transformers[$column]['MEAN'] = Mean::median($columnSamples);
+                // determine feature/price correlation
+                $this->transformers[$column]['C'] = Correlation::pearson($columnSamples, $dataset->getTargets());
             } else {
                 $this->transformers[$column]['TYPE'] = 'STRING';
-                $this->transformers[$column]['MEAN'] = sqrt($uniqueValues);
-                foreach ($pivot as $label => &$frequency) {
-                    $frequency = $this->transformers[$column]['MEAN'] / sqrt($frequency);
+                $values = [];
+                $ord = 1;
+                foreach ($pivot as $value => $frequency) {
+                    $values[$value] = 1 / (1 + exp($ord));
+                    $ord++;
                 }
-                $this->transformers[$column]['VALUES'] = $pivot;
+                // store categorical values
+                $this->transformers[$column]['VALUES'] = $values;
+
+                $columnSamplesTransformed = [];
+                foreach ($columnSamples as $key => $value) {
+                    $columnSamplesTransformed[$key] = $this->transformers[$column]['VALUES'][$value];
+                }
+                // determine feature/price correlation
+                $this->transformers[$column]['C'] = Correlation::pearson($columnSamplesTransformed, $dataset->getTargets()) . "\n";
             }
         }
 
@@ -139,58 +145,51 @@ class PricePredictionEngine
             throw new \Exception("Data transformers not initialized");
         }
 
-        return $this->regression->predict($samples);
+        $data = $this->transformSamples($samples);
+
+        return $this->regression->predict($data);
     }
 
     /**
      * @param array $samples
      * @return array
+     * @throws \Exception
      */
     protected function transformSamples(array $samples)
     {
+        // transform all samples
         foreach ($samples as &$sample) {
+            // transform 1 sample
             foreach ($sample as $column => &$value) {
+                // drop empty values or features which dont correlate to price
+                if (empty($value) || $this->transformers[$column]['C'] < 0) {
+                    $value = 0.001;
+                    continue;
+                }
                 switch ($this->transformers[$column]['transformer']) {
                     case 'Categorical' :
-                        if ($this->transformers[$column]['TYPE'] === 'NUMERIC' &&
-                            is_numeric($value) &&
-                            isset($this->transformers[$column]['VALUES'][$value])) {
-                                    $value = sqrt($this->transformers[$column]['VALUES'][$value]) / $this->transformers[$column]['MEAN'];
-                            } else {
-                                // TODO: feedback recursively this new value into the transformer and redo the structure
-                                break;
-                                    break;
-                            }
+                        if ($this->transformers[$column]['TYPE'] === 'NUMERIC') {
+                            $value = 1 / $this->transformers[$column]['C'] + exp(-$value) * 100;
                         } else {
-
+                            if (isset($this->transformers[$column]['VALUES'][$value])) {
+                                $value = $this->transformers[$column]['VALUES'][$value] * 10;
+                            } else {
+                                $this->transformers[$column]['VALUES'][$value] = 1 / (1 + exp(count($this->transformers[$column]['VALUES']) + 1));
+                                $value = $this->transformers[$column]['VALUES'][$value] * 10;
+                            }
                         }
-                        break;
-                    case 'ShortVariable' :
-                        if (!is_numeric($value)) {
-                            $value = 0;
-                            continue;
-                        }
-                        $value = sqrt($value) / $this->transformers[$column]['MEAN'];
                         break;
                     case 'Continuous' :
-                        if (!is_numeric($value)) {
-                            $value = 0;
-                            continue;
+                        if ($this->transformers[$column]['TYPE'] === 'NUMERIC' && is_numeric($value)) {
+                            $value = 1 / $this->transformers[$column]['C'] + exp(-$value) * 100;
+                        } else {
+                            throw new \Exception("Invalid Continuous value detected [$value] for column [$column]");
                         }
-
-                        $value = sqrt($value) / $this->transformers[$column]['MEAN'];
-
                         break;
                 }
             }
         }
-//
         return $samples;
-    }
-
-    protected function correlate()
-    {
-
     }
 
     /**
