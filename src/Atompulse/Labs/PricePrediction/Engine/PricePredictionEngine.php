@@ -135,7 +135,8 @@ class PricePredictionEngine
 
     /**
      * @param array $samples
-     * @return array
+     * @return array|string
+     * @throws \Exception
      */
     public function predict(array $samples)
     {
@@ -189,6 +190,7 @@ class PricePredictionEngine
                 }
             }
         }
+
         return $samples;
     }
 

@@ -1,9 +1,10 @@
 {
   "name": "atompulse/experiment-labs",
-  "description": "Experiments with PHP",
+  "description": "Experiments with PHP-ML",
   "type": "project",
   "require": {
-    "php-ai/php-ml": "^0.4.1"
+    "php": ">=7.1",
+    "php-ai/php-ml": "^0.7"
   },
   "license": "MIT",
   "authors": [

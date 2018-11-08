@@ -11,9 +11,6 @@ use Phpml\Dataset\CsvDataset;
  */
 class PriceDataset extends CsvDataset
 {
-    /**
-     *
-     */
     public function __construct(string $filepath, int $features)
     {
         parent::__construct($filepath, $features, true);
